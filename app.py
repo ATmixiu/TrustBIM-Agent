@@ -91,11 +91,13 @@ if eng["state"] == "online":
 <b>AI Engine:</b> ● LLM Connected — {eng['platform']} / {eng['model']}
 </div>""", unsafe_allow_html=True)
 else:
+    err = eng.get("error", "")
     st.markdown(f"""
 <div style="background:#fff4e0;border:1px solid #f5cf8a;border-radius:8px;
      padding:8px 16px;margin-bottom:14px;font-size:13px;color:#b36b00;">
-<b>AI Engine:</b> ● Offline Agent — rule-based fallback (set OPENROUTER_API_KEY in .env to enable LLM)
-</div>""", unsafe_allow_html=True)
+<b>AI Engine:</b> ● Offline — {eng['platform']} / {eng['model']}<br>
+<small>{err}</small>
+</div""", unsafe_allow_html=True)
 
 tab_chat, tab_overview, tab_health, tab_coord = st.tabs(
     ["💬 AI Assistant", "📊 Project Overview", "🩺 BIM Health", "🔗 Coordination"]
