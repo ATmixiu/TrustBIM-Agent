@@ -1,11 +1,14 @@
-"""TrustBIM Agent — product-grade Streamlit UI."""
+"""TrustBIM Agent — product-grade Streamlit UI.
+Online: Qwen function-calling agent loop.
+Offline: deterministic rule-based fallback (always works).
+"""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 from core import tools
-from core.router import route
 from core import llm_client
+from core.router import rule_route
 from parsers import ifc_loader, pdf_loader
 
 st.set_page_config(page_title="TrustBIM Agent", page_icon="🏗", layout="wide")
@@ -48,10 +51,6 @@ html, body, [class*="css"] { font-family: 'Segoe UI', 'Helvetica Neue', Arial, s
 .badge-warn { background:#fff4e0; color:#b36b00; }
 .badge-review { background:#ffe2e2; color:#b23030; }
 .badge-match { background:#e3f9ec; color:#1a7f4b; }
-.flow {
-    background:#fff; border:1px solid #e3e9f2; border-radius:12px; padding:16px 20px; margin:10px 0;
-}
-.flow .arrow { text-align:center; color:#00B4D8; font-size:18px; }
 .kv { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #eef2f8; font-size:14px;}
 .kv:last-child { border-bottom:none; }
 .kv .k { color:#5a6b85; }
@@ -59,7 +58,6 @@ html, body, [class*="css"] { font-family: 'Segoe UI', 'Helvetica Neue', Arial, s
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- boot ----------
 @st.cache_resource(show_spinner="Loading BIM & drawings...")
 def boot():
     return ifc_loader.load_all(), pdf_loader.load_all()
@@ -82,26 +80,56 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# AI engine status bar
+# AI engine status
 eng = llm_client.engine_status()
 if eng["state"] == "online":
     st.markdown(f"""
 <div style="background:#e3f9ec;border:1px solid #9be2b8;border-radius:8px;
-     padding:8px 16px;margin-bottom:14px;font-size:13px;color:#1a7f4b;">
-<b>AI Engine:</b> ● LLM Connected — {eng['platform']} / {eng['model']}
+ padding:8px 16px;margin-bottom:14px;font-size:13px;color:#1a7f4b;">
+<b>AI Engine:</b> ● LLM Connected — {eng['platform']} / {eng['model']} (function calling)
 </div>""", unsafe_allow_html=True)
 else:
     err = eng.get("error", "")
     st.markdown(f"""
 <div style="background:#fff4e0;border:1px solid #f5cf8a;border-radius:8px;
-     padding:8px 16px;margin-bottom:14px;font-size:13px;color:#b36b00;">
-<b>AI Engine:</b> ● Offline — {eng['platform']} / {eng['model']}<br>
+ padding:8px 16px;margin-bottom:14px;font-size:13px;color:#b36b00;">
+<b>AI Engine:</b> ● Offline Deterministic Fallback — {eng['platform']} / {eng['model']}<br>
 <small>{err}</small>
-</div""", unsafe_allow_html=True)
+</div>""", unsafe_allow_html=True)
 
 tab_chat, tab_overview, tab_health, tab_coord = st.tabs(
     ["💬 AI Assistant", "📊 Project Overview", "🩺 BIM Health", "🔗 Coordination"]
 )
+
+# ---------- offline fallback executor ----------
+def offline_answer(q):
+    intent, params, _ = rule_route(q)
+    trace = ["Question received", "Mode: Offline Deterministic Fallback", f"Local rule route → {intent}"]
+    if intent == "bim_query":
+        et = params["ifc_type"]; mk = params.get("model","arch")
+        r = tools.tool_query_ifc_entities(discipline=mk, entity_type=et, operation="count")
+        trace += [f"Tool: query_ifc_entities({et}, count)", f"Result: {r.get('count')}"]
+        return r.get("answer", f"There are {r.get('count')} {et}."), r.get("source",""), r.get("evidence",""), "Rule-based IFC query", trace
+    if intent == "bim_health":
+        h = tools.tool_health("architecture")
+        warns = [f"{w['item']}={w['count']}" for w in h["warnings"]]
+        return (f"Health check done. Warnings: {', '.join(warns)}.",
+                h["source"], "; ".join(warns), "BIM Health Check", trace + ["Tool: bim_health_check"])
+    if intent == "coordination":
+        c = tools.tool_coordination()
+        reviews = [f"{i['item']} (arch={i['architecture_mm']} vs str={i['structure_mm']})" for i in c["items"] if i["status"]=="REVIEW"]
+        ans = f"Compared {len(c['items'])} levels. Reviews: {'; '.join(reviews) if reviews else 'none'}."
+        return ans, c["source"], c["evidence"], "Coordination Check", trace + ["Tool: coordination_check"]
+    if intent == "drawing_query":
+        r = tools.tool_extract_rooms("Level 2", "architecture")
+        if r["success"]:
+            return (f"Level 2 rooms: {', '.join(r['rooms'])}.", r["source"],
+                    "Room labels extracted from drawing", "Drawing text extraction",
+                    trace + ["Tool: extract_rooms"])
+        return ("Room information could not be reliably extracted from the drawing.",
+                r["source"], r["reason"], "Drawing text extraction", trace + ["Tool: extract_rooms", "Extraction failed"])
+    return ("I can answer BIM quantity, drawing, health and coordination questions.",
+            "—", "—", "Rule router", trace)
 
 # ---------- Tab 1: AI Assistant ----------
 with tab_chat:
@@ -111,118 +139,45 @@ with tab_chat:
     run = c1.button("Run", type="primary")
 
     if run and q.strip():
-        intent, params, route_src, llm_err = route(q)
-        llm_used = (route_src == "llm")
-
-        if intent == "bim_health":
-            h = tools.tool_health()
-            arch_space = ifc_loader.count("arch", "IfcSpace")
-            steps = ["Question received"]
-            steps.append("LLM intent analysis → bim_health" if llm_used else "Local high-confidence router → bim_health")
-            steps += [
-                "Selected tool: BIM Health Tool",
-                f"Architectural IFC inspected: IfcSpace = {arch_space}",
-                "Health result generated",
-            ]
-            warn = [r for r in h["rows"] if r[2] in ("WARNING","REVIEW")]
-            warn_lines = "; ".join([f"{r[0]} = {r[1]}" for r in warn])
-            res = {
-                "answer": f"The architectural BIM has {len(warn)} item(s) needing attention. Key finding: {warn_lines}.",
-                "source": "Architectural IFC + Structural IFC",
-                "evidence": f"IfcSpace × {arch_space}; {len(warn)} warnings",
-                "method": "BIM Health Check",
-            }
-        elif intent == "coordination":
-            c = tools.tool_coordination()
-            steps = ["Question received"]
-            steps.append("LLM intent analysis → coordination_check" if llm_used else "Local high-confidence router → coordination_check")
-            steps += [
-                "Selected tool: Coordination Tool",
-                "Architecture and structural elevations compared",
-                "Result generated",
-            ]
-            rows = c["rows"]
-            match_n = sum(1 for r in rows if r[3] == "MATCH")
-            review_n = sum(1 for r in rows if r[3] == "REVIEW")
-            review_items = [f"{r[0]}: arch={r[1]} vs str={r[2]}" for r in rows if r[3]=="REVIEW"]
-            res = {
-                "answer": f"{match_n}/{len(rows)} levels MATCH. {review_n} REVIEW: " + ("; ".join(review_items) if review_items else "none"),
-                "source": "Architectural + Structural Engineering Data",
-                "evidence": f"{len(rows)} elevation items compared",
-                "method": "Cross-discipline Coordination Check",
-            }
-        elif intent == "bim_query":
-            res = tools.tool_bim_query(params["ifc_type"], params.get("model", "arch"))
-            n = ifc_loader.count(params.get("model","arch"), params["ifc_type"])
-            steps = ["Question received"]
-            if llm_used:
-                steps.append("LLM intent analysis → bim_query")
+        result = None
+        trace = []
+        mode = ""
+        if llm_client.is_available():
+            result, trace, err = llm_client.agent_run(q)
+            if result:
+                mode = "online"
             else:
-                steps.append(f"LLM failed: {llm_err} · Offline Router")
-            steps += [
-                "Selected tool: BIM Query Tool",
-                f"Queried entity: {params['ifc_type']}",
-                f"Result verified: {n}",
-            ]
-            # optional LLM polish
-            polished = llm_client.polish_answer(q, {"entity": params["ifc_type"], "count": n}) if llm_used else None
-            if polished:
-                res["answer"] = polished
-                steps.append("LLM response generated")
-            else:
-                steps.append("Answer generated")
-        elif intent == "drawing_query":
-            res = tools.tool_drawing_query(q)
-            arch_space = ifc_loader.count("arch", "IfcSpace")
-            steps = ["Question received"]
-            steps.append(f"LLM failed: {llm_err} · Offline Router")
-            steps += [
-                f"BIM check: IfcSpace = {arch_space} → room semantics unavailable",
-                "Automatically switching to drawing source",
-                "Selected tool: Drawing Analysis Tool → Architectural Drawing A102",
-            ]
-            polished = llm_client.polish_answer(q, {"rooms_level_2": True, "source": "A102"}) if llm_used else None
-            if polished:
-                res["answer"] = polished
-                steps.append("LLM response generated")
-            else:
-                steps.append("Answer generated")
+                mode = "offline"
+                trace.append(f"LLM failed: {err} → falling back to offline router")
         else:
-            res = {"answer": "I can answer BIM quantity, drawing, health and coordination questions.",
-                   "source": "—", "evidence": "—", "method": "Rule router",
-                   "trace": ["Question received", "Intent: general"]}
-            steps = res["trace"]
+            mode = "offline"
+            trace = ["Question received", "Mode: Offline Deterministic Fallback"]
 
-        # Answer card
+        if mode == "offline":
+            ans, src, ev, meth, off_trace = offline_answer(q)
+            trace = off_trace + trace
+
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="ans-label">ANSWER</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="ans-body">{res["answer"]}</div>', unsafe_allow_html=True)
+        if mode == "online":
+            st.markdown(f'<div class="ans-body">{result["answer"]}</div>', unsafe_allow_html=True)
+            src = result.get("source",""); ev = result.get("evidence",""); meth = result.get("method","")
+        else:
+            st.markdown(f'<div class="ans-body">{ans}</div>', unsafe_allow_html=True)
         col_a, col_b = st.columns(2)
         with col_a:
-            st.markdown(f'<div class="kv"><span class="k">SOURCE</span><span class="v">{res.get("source","—")}</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kv"><span class="k">EVIDENCE</span><span class="v">{res.get("evidence","—")}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kv"><span class="k">SOURCE</span><span class="v">{src}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kv"><span class="k">EVIDENCE</span><span class="v">{ev}</span></div>', unsafe_allow_html=True)
         with col_b:
-            st.markdown(f'<div class="kv"><span class="k">METHOD</span><span class="v">{res.get("method","—")}</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="kv"><span class="k">CONFIDENCE</span><span class="v">High</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kv"><span class="k">METHOD</span><span class="v">{meth}</span></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kv"><span class="k">MODE</span><span class="v">{"Online LLM Agent" if mode=="online" else "Offline Fallback"}</span></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # Agent Process
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("**Agent Process** (tool execution trace)")
-        for i, s in enumerate(steps, 1):
+        st.markdown("**Agent Process** (real tool execution trace)")
+        for i, s in enumerate(trace, 1):
             st.markdown(f'<div class="trace-step"><b>{i}.</b> {s}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-
-        # Demo 2: visual BIM -> missing -> Drawing flow
-        if intent == "drawing_query":
-            st.markdown('<div class="flow">', unsafe_allow_html=True)
-            st.markdown("**Adaptive Source Selection**")
-            st.markdown("🔵 **BIM (IFC)** — checked first")
-            st.markdown('<div class="arrow">↓ IfcSpace = 0 — room semantics unavailable</div>', unsafe_allow_html=True)
-            st.markdown("📄 **Architectural Drawing A102** — selected automatically")
-            st.markdown('<div class="arrow">↓</div>', unsafe_allow_html=True)
-            st.markdown("✅ Answer from drawing text")
-            st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------- Tab 2: Project Overview ----------
 with tab_overview:
@@ -246,38 +201,32 @@ with tab_overview:
         b[3].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcReinforcingBar",0)}</div><div class="lbl">Reinforcing Bars</div></div>', unsafe_allow_html=True)
 
 # ---------- Tab 3: BIM Health ----------
-def _badge(st):
+def _badge(s):
     return {"PASS":'<span class="badge badge-pass">PASS</span>',
             "WARNING":'<span class="badge badge-warn">WARNING</span>',
-            "REVIEW":'<span class="badge badge-review">REVIEW</span>'}[st]
+            "REVIEW":'<span class="badge badge-review">REVIEW</span>'}[s]
 
 with tab_health:
     st.subheader("BIM Health Report")
-    run_health = st.button("Run BIM Health Check", type="primary") or st.session_state.pop("_goto", None) == "health"
-    if run_health:
-        h = tools.tool_health()
+    if st.button("Run BIM Health Check", type="primary"):
+        h = tools.tool_health("both")
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        for name, value, st_, note in h["rows"]:
+        for c in h["checks"]:
             st.markdown(
-                f'<div class="kv"><span class="k">{name}</span>'
-                f'<span class="v">{value} &nbsp; {_badge(st_)}</span></div>',
+                f'<div class="kv"><span class="k">{c["discipline"]} · {c["item"]}</span>'
+                f'<span class="v">{c["count"]} &nbsp; {_badge(c["status"])}</span></div>',
                 unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown("""
-<div class="card">
-<b>Recommendation</b><br/>
-Room-related queries should use architectural drawings because spatial room semantics
-(IfcSpace) are unavailable in the current IFC export.
-</div>""", unsafe_allow_html=True)
+        st.markdown(f'<div class="card"><b>Recommendation</b><br/>{h["recommendation"]}</div>',
+                    unsafe_allow_html=True)
 
 # ---------- Tab 4: Coordination ----------
 with tab_coord:
     st.subheader("Architecture–Structure Coordination")
-    run_coord = st.button("Run Coordination Check", type="primary") or st.session_state.pop("_goto", None) == "coord"
-    if run_coord:
+    if st.button("Run Coordination Check", type="primary"):
         c = tools.tool_coordination()
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        for r in c["rows"]:
+        for r in c["items"]:
             badge = ("<span class='badge badge-match'>MATCH</span>" if r["status"]=="MATCH"
                      else f"<span class='badge badge-review'>{r['status']}</span>")
             st.markdown(
@@ -287,4 +236,4 @@ with tab_coord:
             if r["status"] != "MATCH":
                 st.caption("⚠ Potential coordination issue. Manual review recommended.")
         st.markdown('</div>', unsafe_allow_html=True)
-        st.caption(c["source_note"])
+        st.caption(c["source"])

@@ -1,17 +1,15 @@
-"""OpenAI-compatible LLM client for OpenRouter.
-LLM only does intent understanding and answer polishing.
-It NEVER computes BIM numbers itself.
-All failures (missing key, network, timeout, 429) return None -> caller falls back to rules.
+"""LLM client with true OpenAI function-calling agent loop.
+LLM = brain (language understanding + tool selection).
+Tools = engineering ground truth (IfcOpenShell / PyMuPDF).
 """
-import os, json, re
-from typing import Optional, Dict
+import os, json, re, time as _time
+from typing import Optional, Dict, List
 from dotenv import load_dotenv
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT, ".env"))
 
 def _secret(key, default=""):
-    # 1) Streamlit Cloud Secrets  2) .env / env var
     try:
         import streamlit as st
         if hasattr(st, "secrets") and key in st.secrets:
@@ -20,29 +18,22 @@ def _secret(key, default=""):
         pass
     return os.getenv(key, default).strip()
 
-# Provider priority: Qwen (Alibaba Model Studio) first, OpenRouter as fallback
 _QWEN_KEY = _secret("QWEN_API_KEY")
 _QWEN_URL = _secret("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-_QWEN_MODEL = _secret("QWEN_MODEL") or "qwen-flash"
+_QWEN_MODEL = _secret("QWEN_MODEL") or "qwen3.7-flash"
 
 _OR_KEY = _secret("OPENROUTER_API_KEY")
 _OR_URL = _secret("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
 _OR_MODEL = _secret("OPENROUTER_MODEL") or "openai/gpt-oss-20b:free"
 
 if _QWEN_KEY:
-    API_KEY = _QWEN_KEY
-    BASE_URL = _QWEN_URL
-    MODEL = _QWEN_MODEL
+    API_KEY, BASE_URL, MODEL = _QWEN_KEY, _QWEN_URL, _QWEN_MODEL
     PROVIDER = "Qwen / Alibaba Cloud Model Studio"
 elif _OR_KEY:
-    API_KEY = _OR_KEY
-    BASE_URL = _OR_URL
-    MODEL = _OR_MODEL
+    API_KEY, BASE_URL, MODEL = _OR_KEY, _OR_URL, _OR_MODEL
     PROVIDER = "OpenRouter"
 else:
-    API_KEY = ""
-    BASE_URL = _QWEN_URL
-    MODEL = _QWEN_MODEL
+    API_KEY, BASE_URL, MODEL = "", _QWEN_URL, _QWEN_MODEL
     PROVIDER = "Qwen / Alibaba Cloud Model Studio"
 
 _client = None
@@ -55,7 +46,7 @@ def _get_client():
         return _client
     try:
         from openai import OpenAI
-        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=10.0)
+        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=15.0)
     except Exception as e:
         global _last_error
         _last_error = f"client_init:{type(e).__name__}:{e}"
@@ -63,143 +54,193 @@ def _get_client():
     return _client
 
 def _ping():
-    """One tiny real API call to verify the key+model actually work."""
     global _ping_ok, _last_error
     if _ping_ok is not None:
         return _ping_ok
     c = _get_client()
     if c is None:
-        _ping_ok = False
-        return False
+        _ping_ok = False; return False
     try:
-        r = c.chat.completions.create(
+        c.chat.completions.create(
             model=MODEL,
-            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
-            max_tokens=5, temperature=0.0,
-        )
+            messages=[{"role":"user","content":"Reply with exactly: OK"}],
+            max_tokens=5, temperature=0.0)
         _ping_ok = True
     except Exception as e:
         _ping_ok = False
-        code = getattr(e, "status_code", None) or getattr(e, "code", None)
+        code = getattr(e,"status_code",None) or getattr(e,"code",None)
         _last_error = f"ping:HTTP{code}:{type(e).__name__}:{str(e)[:200]}"
     return _ping_ok
 
-def is_available() -> bool:
+def is_available():
     return bool(API_KEY) and _ping()
 
-def engine_status() -> Dict[str, str]:
+def engine_status():
     if is_available():
-        return {"state": "online", "platform": PROVIDER, "model": MODEL, "error": ""}
-    return {"state": "offline", "platform": PROVIDER, "model": MODEL, "error": _last_error or "no key"}
+        return {"state":"online","platform":PROVIDER,"model":MODEL,"error":""}
+    return {"state":"offline","platform":PROVIDER,"model":MODEL,"error":_last_error or "no key"}
 
-# ---------- retry wrapper ----------
-import time as _time
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# ---------- Tool schemas (OpenAI function calling format) ----------
+TOOL_SCHEMAS = [
+    {
+        "type":"function",
+        "function":{
+            "name":"query_ifc_entities",
+            "description":"Query an IFC BIM model. Use operation=count to count entities, operation=types to list distinct type names.",
+            "parameters":{"type":"object","properties":{
+                "discipline":{"type":"string","enum":["architecture","structure"]},
+                "entity_type":{"type":"string","description":"e.g. IfcDoor, IfcWindow, IfcBeam, IfcColumn, IfcPile, IfcSlab, IfcStair, IfcRailing, IfcSpace, IfcBuildingStorey, IfcReinforcingBar, IfcFooting, IfcRoof, IfcCurtainWall"},
+                "operation":{"type":"string","enum":["count","types"]}
+            },"required":["discipline","entity_type","operation"]}
+        }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"search_drawing",
+            "description":"Search PDF construction drawings for a query term. Returns matching sheets/pages with snippets.",
+            "parameters":{"type":"object","properties":{
+                "discipline":{"type":"string","enum":["architecture","structure"]},
+                "query":{"type":"string"}
+            },"required":["discipline","query"]}
+        }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"extract_rooms",
+            "description":"Extract room names from a floor plan drawing for a given level. Use when IFC has no IfcSpace.",
+            "parameters":{"type":"object","properties":{
+                "discipline":{"type":"string","enum":["architecture","structure"]},
+                "level":{"type":"string","description":"e.g. Level 1, Level 2, upstairs, downstairs"}
+            },"required":["discipline"]}
+        }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"bim_health_check",
+            "description":"Check BIM data quality: presence of key entities like IfcSpace, IfcDoor, IfcBeam, etc.",
+            "parameters":{"type":"object","properties":{
+                "discipline":{"type":"string","enum":["architecture","structure","both"]}
+            },"required":["discipline"]}
+        }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"coordination_check",
+            "description":"Compare architectural and structural elevations/levels from IFC storeys.",
+            "parameters":{"type":"object","properties":{}}
+        }
+    },
+    {
+        "type":"function",
+        "function":{
+            "name":"project_summary",
+            "description":"Get a dynamic summary of all available BIM entity counts in both disciplines.",
+            "parameters":{"type":"object","properties":{}}
+        }
+    },
+]
 
-def _chat_with_retry(client, messages):
-    """Up to 3 attempts. Retry on 429/5xx/timeout; fail fast on 401/403."""
-    last_err = None
-    for attempt in range(3):
-        try:
-            r = client.chat.completions.create(
-                model=MODEL, messages=messages, temperature=0.0, max_tokens=200,
-            )
-            return r.choices[0].message.content or "", None
-        except Exception as e:
-            last_err = e
-            code = getattr(e, "status_code", None) or getattr(e, "code", None)
-            # 401/403 = bad key/model, do not retry
-            if code in (401, 403):
-                return None, f"auth_error:{code}"
-            # otherwise retry with backoff
-            if attempt < 2:
-                _time.sleep(1.0 * (attempt + 1))
-            continue
-    return None, f"retry_exhausted:{type(last_err).__name__}"
-
-# ---------- Intent classification ----------
-INTENT_SYS = """You are an intent classifier for a BIM agent.
-Output STRICT JSON only, no prose. Map the user question to one of:
-- bim_query: a count/quantity of BIM entities (door, window, wall, beam, column, pile, footing, rebar, storey).
-- drawing_query: a room / drawing / sheet / plan question.
-- bim_health: ask what is missing, wrong, or healthy about the BIM.
-- coordination_check: compare architecture vs structure, elevations, alignment.
-Return JSON:
-{"intent":"...", "discipline":"architecture|structural|mixed", "entity":"door|window|...", "topic":"rooms|...", "level":"Level 2|..."}
-Only include relevant fields."""
-
-_ENTITY_MAP = {
-    "door": "IfcDoor", "doors": "IfcDoor",
-    "window": "IfcWindow", "windows": "IfcWindow",
-    "wall": "IfcWall", "walls": "IfcWall",
-    "beam": "IfcBeam", "beams": "IfcBeam",
-    "column": "IfcColumn", "columns": "IfcColumn",
-    "pile": "IfcPile", "piles": "IfcPile",
-    "footing": "IfcFooting", "footings": "IfcFooting",
-    "rebar": "IfcReinforcingBar", "reinforcing bar": "IfcReinforcingBar",
-    "storey": "IfcBuildingStorey", "level": "IfcBuildingStorey",
-}
-_DISCIPLINE_MODEL = {"architecture": "arch", "architectural": "arch", "structural": "str", "structure": "str"}
-
-def classify_intent(question: str):
-    """Return (parsed_dict, error_str). error_str=None means success."""
-    c = _get_client()
-    if c is None:
-        return None, "no_client"
-    raw, err = _chat_with_retry(c, [
-        {"role": "system", "content": INTENT_SYS},
-        {"role": "user", "content": question},
-    ])
-    if raw is None:
-        return None, err or "api_failed"
-    # strip markdown fences if present
-    txt = raw.strip()
-    txt = txt.replace("```json", "").replace("```", "").strip()
+# ---------- Tool dispatcher ----------
+def _dispatch(name, args):
+    from core import tools
     try:
-        m = re.search(r"\{.*\}", txt, re.S)
-        if not m:
-            return None, f"no_json_in_response:{txt[:100]}"
-        data = json.loads(m.group(0))
-        intent = data.get("intent")
-        if intent not in ("bim_query", "drawing_query", "bim_health", "coordination_check"):
-            return None, f"bad_intent:{intent}"
-        out = {"intent": intent, "llm": True}
-        if intent == "bim_query":
-            ent = (data.get("entity") or "").lower()
-            ifc_type = _ENTITY_MAP.get(ent)
-            if not ifc_type:
-                return None, f"unknown_entity:{ent}"
-            disc = (data.get("discipline") or "").lower()
-            model_key = _DISCIPLINE_MODEL.get(disc, "arch")
-            if ifc_type in ("IfcBeam","IfcColumn","IfcPile","IfcFooting","IfcReinforcingBar"):
-                model_key = "str"
-            out.update({"ifc_type": ifc_type, "model": model_key})
-        elif intent == "drawing_query":
-            out["level"] = data.get("level") or "Level 2"
-        return out, None
+        if name == "query_ifc_entities":
+            return tools.tool_query_ifc_entities(**args)
+        elif name == "search_drawing":
+            return tools.tool_search_drawing(**args)
+        elif name == "extract_rooms":
+            return tools.tool_extract_rooms(**args)
+        elif name == "bim_health_check":
+            return tools.tool_health(**args)
+        elif name == "coordination_check":
+            return tools.tool_coordination()
+        elif name == "project_summary":
+            return tools.tool_summary()
+        return {"success": False, "reason": f"unknown tool {name}"}
     except Exception as e:
-        return None, f"json_parse:{type(e).__name__}"
+        return {"success": False, "reason": f"tool_error:{type(e).__name__}:{e}"}
 
-# ---------- Answer polishing ----------
-POLISH_SYS = """You rewrite engineering answers from a BIM agent.
-RULES:
-1. Use ONLY the tool-provided data. Never change numbers.
-2. If data says count=16, you MUST say 16.
-3. Keep it short (1-2 sentences).
-4. Do NOT call a REVIEW a "design error". Say "manual review recommended".
-5. Do NOT mention internal tool names, model names, or JSON.
-Output the final user-facing sentence only."""
+SYSTEM_PROMPT = """You are TrustBIM Agent, an engineering-data assistant for BIM and construction drawings.
 
-def polish_answer(question: str, tool_payload: Dict) -> Optional[str]:
+You MUST answer project-specific engineering questions ONLY by calling the provided tools.
+Rules:
+1. Never invent project-specific engineering facts (counts, materials, elevations, room names).
+2. Use tools for quantities, types, materials, levels, rooms, drawings and model info.
+3. Prefer structured IFC when it directly answers the question.
+4. If IFC evidence is missing (e.g. IfcSpace = 0), consider drawing tools.
+5. You may call multiple tools across steps when necessary.
+6. Base the final answer ONLY on tool observations.
+7. Clearly state when evidence is insufficient.
+8. Do NOT turn a potential coordination issue into a confirmed design error. Say "manual review recommended".
+9. Do NOT use general world knowledge to invent BIM/project values.
+10. Include source and evidence when possible.
+Answer in 1-3 short sentences, English."""
+
+MAX_STEPS = 4
+_RETRYABLE = {429, 500, 502, 503, 504}
+
+def agent_run(question: str):
+    """Run the Qwen function-calling loop.
+    Returns (result_dict, trace_list, error_str).
+    result_dict has answer/source/evidence/method."""
     c = _get_client()
     if c is None:
-        return None
-    user_msg = f"User question: {question}\nTool data: {json.dumps(tool_payload, ensure_ascii=False)}"
-    raw, err = _chat_with_retry(c, [
-        {"role": "system", "content": POLISH_SYS},
-        {"role": "user", "content": user_msg},
-    ])
-    if raw is None:
-        return None
-    txt = raw.strip()
-    return txt if len(txt) > 5 else None
+        return None, ["Question received", "No LLM client"], "no_client"
+    messages = [
+        {"role":"system","content":SYSTEM_PROMPT},
+        {"role":"user","content":question},
+    ]
+    trace = ["Question received"]
+    tool_results = []
+    for step in range(MAX_STEPS):
+        try:
+            resp = c.chat.completions.create(
+                model=MODEL, messages=messages,
+                tools=TOOL_SCHEMAS, tool_choice="auto",
+                temperature=0.0, max_tokens=400,
+            )
+        except Exception as e:
+            code = getattr(e,"status_code",None) or getattr(e,"code",None)
+            if code in (401,403):
+                return None, trace, f"auth_error:{code}"
+            # retry once
+            _time.sleep(1.0)
+            try:
+                resp = c.chat.completions.create(
+                    model=MODEL, messages=messages,
+                    tools=TOOL_SCHEMAS, tool_choice="auto",
+                    temperature=0.0, max_tokens=400)
+            except Exception as e2:
+                return None, trace, f"api_error:{type(e2).__name__}:{str(e2)[:150]}"
+        msg = resp.choices[0].message
+        if not getattr(msg, "tool_calls", None):
+            final = (msg.content or "").strip()
+            trace.append("Qwen final answer generated")
+            # determine source/evidence from last tool result
+            src = tool_results[-1].get("source","") if tool_results else ""
+            ev = tool_results[-1].get("evidence","") if tool_results else ""
+            method = "Qwen function-calling agent"
+            return {"answer": final, "source": src, "evidence": ev, "method": method}, trace, None
+        # process tool calls
+        messages.append(msg)
+        for tc in msg.tool_calls:
+            fname = tc.function.name
+            try:
+                fargs = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                fargs = {}
+            trace.append(f"Qwen requested tool: {fname} args={json.dumps(fargs, ensure_ascii=False)}")
+            result = _dispatch(fname, fargs)
+            tool_results.append(result)
+            trace.append(f"Tool result: {json.dumps(result, ensure_ascii=False)[:200]}")
+            messages.append({
+                "role":"tool",
+                "tool_call_id": tc.id,
+                "name": fname,
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+    return None, trace, "max_steps_exceeded"

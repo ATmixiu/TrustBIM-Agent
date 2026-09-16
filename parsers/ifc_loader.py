@@ -1,21 +1,31 @@
-"""IFC loader: parse both IFCs once, cache stats and storeys."""
-import json, os, threading
+"""IFC loader: parse both IFCs once, cache all entity types, storeys, elevations."""
+import os, re, threading
 import ifcopenshell
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
 
-TARGET_ARCH = ["IfcProject","IfcSite","IfcBuilding","IfcBuildingStorey","IfcSpace",
-               "IfcDoor","IfcWindow","IfcWall"]
-TARGET_STR = ["IfcBeam","IfcColumn","IfcPile","IfcFooting","IfcReinforcingBar",
-              "IfcBuildingStorey","IfcSpace"]
-
 _lock = threading.Lock()
 _cache = {}
 
-def _build(path, label, targets):
+# Types we always track for health/summary
+DEFAULT_TARGETS = [
+    "IfcProject","IfcSite","IfcBuilding","IfcBuildingStorey","IfcSpace",
+    "IfcDoor","IfcWindow","IfcWall","IfcSlab","IfcRoof","IfcStair",
+    "IfcRailing","IfcCurtainWall","IfcBeam","IfcColumn","IfcPile",
+    "IfcFooting","IfcReinforcingBar","IfcMember","IfcCovering",
+]
+
+def _build(path, label):
     m = ifcopenshell.open(path)
-    counts = {t: len(m.by_type(t)) for t in targets}
+    # discover all entity types actually present
+    present = set()
+    try:
+        for elem in m:
+            present.add(elem.is_a())
+    except Exception:
+        pass
+    counts = {t: len(m.by_type(t)) for t in present if t.startswith("Ifc")}
     storeys = []
     for s in m.by_type("IfcBuildingStorey"):
         elev = None
@@ -24,28 +34,66 @@ def _build(path, label, targets):
                 elev = round(float(s.Elevation), 1)
         except Exception:
             pass
-        storeys.append({"name": s.Name, "elevation": elev})
+        storeys.append({"name": s.Name or "", "elevation": elev})
     return {
+        "model": m,
         "label": label,
         "schema": m.schema,
         "counts": counts,
         "storeys": storeys,
+        "entity_types": sorted(counts.keys()),
     }
 
 def load_all():
     with _lock:
         if _cache:
             return _cache
-        _cache["arch"] = _build(os.path.join(DATA, "architectural.ifc"), "Architectural", TARGET_ARCH)
-        _cache["str"]  = _build(os.path.join(DATA, "structural.ifc"),   "Structural",   TARGET_STR)
+        _cache["arch"] = _build(os.path.join(DATA, "architectural.ifc"), "Architectural")
+        _cache["str"]  = _build(os.path.join(DATA, "structural.ifc"),   "Structural")
         return _cache
 
 def count(model_key, ifc_type):
     d = load_all()
-    return d[model_key]["counts"].get(ifc_type, 0)
+    if ifc_type in d[model_key]["counts"]:
+        return d[model_key]["counts"][ifc_type]
+    # dynamic query
+    m = d[model_key]["model"]
+    try:
+        n = len(m.by_type(ifc_type))
+        d[model_key]["counts"][ifc_type] = n
+        return n
+    except Exception:
+        return 0
+
+def entity_types(model_key=None):
+    d = load_all()
+    if model_key:
+        return d[model_key]["entity_types"]
+    return {"arch": d["arch"]["entity_types"], "str": d["str"]["entity_types"]}
 
 def storeys(model_key):
     return load_all()[model_key]["storeys"]
 
 def schema(model_key):
     return load_all()[model_key]["schema"]
+
+def get_model(model_key):
+    return load_all()[model_key]["model"]
+
+def list_types(model_key, ifc_type):
+    """Return distinct type names for an entity type, de-duplicated by base name."""
+    m = get_model(model_key)
+    bases = set()
+    try:
+        for elem in m.by_type(ifc_type):
+            n = getattr(elem, "Name", None)
+            if n:
+                # strip trailing :<numeric id> suffix
+                base = re.sub(r":\d+$", "", str(n))
+                bases.add(base)
+            ot = getattr(elem, "ObjectType", None)
+            if ot:
+                bases.add(str(ot))
+    except Exception:
+        pass
+    return sorted(bases)
