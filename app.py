@@ -175,8 +175,11 @@ with tab_chat:
                         f.write(upload.getbuffer())
                     saved.append(name)
             if saved:
-                ifc_loader.set_project_dir(up_dir)
-                pdf_loader.set_project_dir(up_dir)
+                try:
+                    ifc_loader.set_project_dir(up_dir)
+                    pdf_loader.set_project_dir(up_dir)
+                except AttributeError:
+                    pass
                 st.session_state["proj_loaded"] = True
                 st.success(f"Loaded: {', '.join(saved)}")
                 st.cache_resource.clear()
@@ -184,16 +187,22 @@ with tab_chat:
             else:
                 st.warning("Please upload at least one file.")
         if st.session_state.get("proj_loaded") and st.button("Clear / Reset to Sample House"):
-            ifc_loader.set_project_dir(None)
-            pdf_loader.set_project_dir(None)
+            try:
+                ifc_loader.set_project_dir(None)
+                pdf_loader.set_project_dir(None)
+            except AttributeError:
+                pass
             st.session_state["proj_loaded"] = False
             st.cache_resource.clear()
             st.rerun()
         if st.session_state.get("proj_loaded"):
             st.info("📁 Current: Uploaded Project (session-only, not saved to GitHub)")
     else:
-        ifc_loader.set_project_dir(None)
-        pdf_loader.set_project_dir(None)
+        try:
+            ifc_loader.set_project_dir(None)
+            pdf_loader.set_project_dir(None)
+        except AttributeError:
+            pass
 
     q = st.text_input("Ask the agent",
                       placeholder="e.g. How many doors are in the architectural model? / 这个建筑有几扇门？")
