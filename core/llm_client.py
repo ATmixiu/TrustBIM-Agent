@@ -46,6 +46,8 @@ else:
     PROVIDER = "Qwen / Alibaba Cloud Model Studio"
 
 _client = None
+_last_error = None
+_ping_ok = None
 
 def _get_client():
     global _client
@@ -53,18 +55,42 @@ def _get_client():
         return _client
     try:
         from openai import OpenAI
-        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=15.0)
-    except Exception:
+        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=10.0)
+    except Exception as e:
+        global _last_error
+        _last_error = f"client_init:{type(e).__name__}:{e}"
         _client = None
     return _client
 
+def _ping():
+    """One tiny real API call to verify the key+model actually work."""
+    global _ping_ok, _last_error
+    if _ping_ok is not None:
+        return _ping_ok
+    c = _get_client()
+    if c is None:
+        _ping_ok = False
+        return False
+    try:
+        r = c.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+            max_tokens=5, temperature=0.0,
+        )
+        _ping_ok = True
+    except Exception as e:
+        _ping_ok = False
+        code = getattr(e, "status_code", None) or getattr(e, "code", None)
+        _last_error = f"ping:HTTP{code}:{type(e).__name__}:{str(e)[:200]}"
+    return _ping_ok
+
 def is_available() -> bool:
-    return bool(API_KEY) and _get_client() is not None
+    return bool(API_KEY) and _ping()
 
 def engine_status() -> Dict[str, str]:
     if is_available():
-        return {"state": "online", "platform": PROVIDER, "model": MODEL}
-    return {"state": "offline", "platform": PROVIDER, "model": MODEL}
+        return {"state": "online", "platform": PROVIDER, "model": MODEL, "error": ""}
+    return {"state": "offline", "platform": PROVIDER, "model": MODEL, "error": _last_error or "no key"}
 
 # ---------- retry wrapper ----------
 import time as _time

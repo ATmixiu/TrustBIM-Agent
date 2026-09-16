@@ -111,12 +111,45 @@ with tab_chat:
     if run and q.strip():
         intent, params, route_src = route(q)
         llm_used = (route_src == "llm")
-        if intent == "bim_health":
-            st.info("Opening BIM Health tab..."); st.session_state["_goto"] = "health"; st.rerun()
-        if intent == "coordination":
-            st.info("Opening Coordination tab..."); st.session_state["_goto"] = "coord"; st.rerun()
 
-        if intent == "bim_query":
+        if intent == "bim_health":
+            h = tools.tool_health()
+            arch_space = ifc_loader.count("arch", "IfcSpace")
+            steps = ["Question received"]
+            steps.append("LLM intent analysis → bim_health" if llm_used else "Local high-confidence router → bim_health")
+            steps += [
+                "Selected tool: BIM Health Tool",
+                f"Architectural IFC inspected: IfcSpace = {arch_space}",
+                "Health result generated",
+            ]
+            warn = [r for r in h["rows"] if r[2] in ("WARNING","REVIEW")]
+            warn_lines = "; ".join([f"{r[0]} = {r[1]}" for r in warn])
+            res = {
+                "answer": f"The architectural BIM has {len(warn)} item(s) needing attention. Key finding: {warn_lines}.",
+                "source": "Architectural IFC + Structural IFC",
+                "evidence": f"IfcSpace × {arch_space}; {len(warn)} warnings",
+                "method": "BIM Health Check",
+            }
+        elif intent == "coordination":
+            c = tools.tool_coordination()
+            steps = ["Question received"]
+            steps.append("LLM intent analysis → coordination_check" if llm_used else "Local high-confidence router → coordination_check")
+            steps += [
+                "Selected tool: Coordination Tool",
+                "Architecture and structural elevations compared",
+                "Result generated",
+            ]
+            rows = c["rows"]
+            match_n = sum(1 for r in rows if r[3] == "MATCH")
+            review_n = sum(1 for r in rows if r[3] == "REVIEW")
+            review_items = [f"{r[0]}: arch={r[1]} vs str={r[2]}" for r in rows if r[3]=="REVIEW"]
+            res = {
+                "answer": f"{match_n}/{len(rows)} levels MATCH. {review_n} REVIEW: " + ("; ".join(review_items) if review_items else "none"),
+                "source": "Architectural + Structural Engineering Data",
+                "evidence": f"{len(rows)} elevation items compared",
+                "method": "Cross-discipline Coordination Check",
+            }
+        elif intent == "bim_query":
             res = tools.tool_bim_query(params["ifc_type"], params.get("model", "arch"))
             n = ifc_loader.count(params.get("model","arch"), params["ifc_type"])
             steps = ["Question received"]

@@ -21,10 +21,12 @@ NOUN_MAP = [
 
 def rule_route(question: str):
     q = question.lower()
-    if any(k in q for k in ["health check", "run health", "bim health", "missing", "anything wrong"]):
+    if any(k in q for k in ["health", "missing", "anything wrong", "incomplete", "quality",
+                             "bim problem", "data quality", "anything missing", "run health"]):
         return "bim_health", {}, "rules"
-    if any(k in q for k in ["coordination check", "run coordination", "compare",
-                             "coordination", "consistent", "elevation"]):
+    if any(k in q for k in ["coordination", "compare", "consistent", "consistency",
+                             "elevation", "architecture and structure", "architectural and structural",
+                             "difference between", "levels consistent", "run coordination"]):
         return "coordination", {}, "rules"
     if any(k in q for k in ["room", "bedroom", "kitchen", "bath", "living", "hall",
                             "closet", "drawing", "plan", "sheet", "legend",
