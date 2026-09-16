@@ -63,49 +63,57 @@ def load_all():
         if _cache:
             return _cache
         arch_p, str_p = _paths()
-        if os.path.exists(arch_p):
-            _cache["arch"] = _build(arch_p, "Architectural")
-        if os.path.exists(str_p):
-            _cache["str"] = _build(str_p, "Structural")
+        _cache["arch"] = _build(arch_p, "Architectural") if os.path.exists(arch_p) else None
+        _cache["str"]  = _build(str_p, "Structural") if os.path.exists(str_p) else None
         return _cache
 
 def count(model_key, ifc_type):
     d = load_all()
-    if ifc_type in d[model_key]["counts"]:
-        return d[model_key]["counts"][ifc_type]
-    # dynamic query
-    m = d[model_key]["model"]
+    data = d.get(model_key)
+    if data is None:
+        return 0
+    if ifc_type in data["counts"]:
+        return data["counts"][ifc_type]
+    m = data["model"]
     try:
         n = len(m.by_type(ifc_type))
-        d[model_key]["counts"][ifc_type] = n
+        data["counts"][ifc_type] = n
         return n
     except Exception:
         return 0
 
+def storeys(model_key):
+    d = load_all()
+    data = d.get(model_key)
+    return data["storeys"] if data else []
+
+def schema(model_key):
+    d = load_all()
+    data = d.get(model_key)
+    return data["schema"] if data else ""
+
+def get_model(model_key):
+    d = load_all()
+    data = d.get(model_key)
+    return data["model"] if data else None
+
 def entity_types(model_key=None):
     d = load_all()
     if model_key:
-        return d[model_key]["entity_types"]
-    return {"arch": d["arch"]["entity_types"], "str": d["str"]["entity_types"]}
-
-def storeys(model_key):
-    return load_all()[model_key]["storeys"]
-
-def schema(model_key):
-    return load_all()[model_key]["schema"]
-
-def get_model(model_key):
-    return load_all()[model_key]["model"]
+        data = d.get(model_key)
+        return data["entity_types"] if data else []
+    return {"arch": (d.get("arch") or {}).get("entity_types", []),
+            "str": (d.get("str") or {}).get("entity_types", [])}
 
 def list_types(model_key, ifc_type):
-    """Return distinct type names for an entity type, de-duplicated by base name."""
     m = get_model(model_key)
+    if m is None:
+        return []
     bases = set()
     try:
         for elem in m.by_type(ifc_type):
             n = getattr(elem, "Name", None)
             if n:
-                # strip trailing :<numeric id> suffix
                 base = re.sub(r":\d+$", "", str(n))
                 bases.add(base)
             ot = getattr(elem, "ObjectType", None)

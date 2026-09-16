@@ -61,17 +61,27 @@ def boot():
 
 ifc_data, pdf_data = boot()
 
-st.markdown("""
+def _pill(label, ready):
+    dot = "● Ready" if ready else "○ Not Loaded"
+    cls = "#7CFFB2" if ready else "#ccc"
+    return f'<div class="status-pill">{label} &nbsp;<b style="color:{cls}">{dot}</b></div>'
+
+arch_ifc_ok = ifc_data.get("arch") is not None
+str_ifc_ok  = ifc_data.get("str") is not None
+arch_pdf_ok = pdf_data.get("arch") is not None
+str_pdf_ok  = pdf_data.get("str") is not None
+
+st.markdown(f"""
 <div class="hero">
   <h1>TrustBIM Agent</h1>
   <div class="sub">AI Agent for BIM &amp; Construction Drawings</div>
   <div class="intro">Ask questions about BIM models and construction drawings.
   The agent automatically selects the most reliable data source and provides verifiable evidence.</div>
   <div class="status-row">
-    <div class="status-pill">Architectural Drawing &nbsp;<b>● Ready</b></div>
-    <div class="status-pill">Architectural BIM &nbsp;<b>● Ready</b></div>
-    <div class="status-pill">Structural Drawing &nbsp;<b>● Ready</b></div>
-    <div class="status-pill">Structural BIM &nbsp;<b>● Ready</b></div>
+    {_pill("Architectural Drawing", arch_pdf_ok)}
+    {_pill("Architectural BIM", arch_ifc_ok)}
+    {_pill("Structural Drawing", str_pdf_ok)}
+    {_pill("Structural BIM", str_ifc_ok)}
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -251,24 +261,28 @@ with tab_chat:
         st.markdown('</div>', unsafe_allow_html=True)
 
 with tab_overview:
-    st.subheader("Project Overview — Sample House")
-    arch = ifc_data["arch"]["counts"]
-    sstr = ifc_data["str"]["counts"]
+    st.subheader("Project Overview")
+    arch_d = ifc_data.get("arch")
+    str_d  = ifc_data.get("str")
+    arch = arch_d["counts"] if arch_d else {}
+    sstr = str_d["counts"] if str_d else {}
     colL, colR = st.columns(2)
     with colL:
-        st.markdown("**Architectural BIM**")
-        a = st.columns(4)
-        a[0].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcDoor",0)}</div><div class="lbl">Doors</div></div>', unsafe_allow_html=True)
-        a[1].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcWindow",0)}</div><div class="lbl">Windows</div></div>', unsafe_allow_html=True)
-        a[2].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcWall",0)}</div><div class="lbl">Walls</div></div>', unsafe_allow_html=True)
-        a[3].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcBuildingStorey",0)}</div><div class="lbl">Storeys</div></div>', unsafe_allow_html=True)
+        st.markdown("**Architectural BIM**" if arch_d else "**Architectural BIM** ○ Not Loaded")
+        if arch_d:
+            a = st.columns(4)
+            a[0].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcDoor",0)}</div><div class="lbl">Doors</div></div>', unsafe_allow_html=True)
+            a[1].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcWindow",0)}</div><div class="lbl">Windows</div></div>', unsafe_allow_html=True)
+            a[2].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcWall",0)}</div><div class="lbl">Walls</div></div>', unsafe_allow_html=True)
+            a[3].markdown(f'<div class="metric-card"><div class="num">{arch.get("IfcBuildingStorey",0)}</div><div class="lbl">Storeys</div></div>', unsafe_allow_html=True)
     with colR:
-        st.markdown("**Structural BIM**")
-        b = st.columns(4)
-        b[0].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcBeam",0)}</div><div class="lbl">Beams</div></div>', unsafe_allow_html=True)
-        b[1].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcColumn",0)}</div><div class="lbl">Columns</div></div>', unsafe_allow_html=True)
-        b[2].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcPile",0)}</div><div class="lbl">Piles</div></div>', unsafe_allow_html=True)
-        b[3].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcReinforcingBar",0)}</div><div class="lbl">Reinforcing Bars</div></div>', unsafe_allow_html=True)
+        st.markdown("**Structural BIM**" if str_d else "**Structural BIM** ○ Not Loaded")
+        if str_d:
+            b = st.columns(4)
+            b[0].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcBeam",0)}</div><div class="lbl">Beams</div></div>', unsafe_allow_html=True)
+            b[1].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcColumn",0)}</div><div class="lbl">Columns</div></div>', unsafe_allow_html=True)
+            b[2].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcPile",0)}</div><div class="lbl">Piles</div></div>', unsafe_allow_html=True)
+            b[3].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcReinforcingBar",0)}</div><div class="lbl">Reinforcing Bars</div></div>', unsafe_allow_html=True)
 
 def _badge(s):
     return {"PASS":'<span class="badge badge-pass">PASS</span>',

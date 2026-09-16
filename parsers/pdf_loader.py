@@ -34,10 +34,8 @@ def load_all():
         if _cache:
             return _cache
         arch_p, str_p = _paths()
-        if os.path.exists(arch_p):
-            _cache["arch"] = _build(arch_p, "Architectural")
-        if os.path.exists(str_p):
-            _cache["str"] = _build(str_p, "Structural")
+        _cache["arch"] = _build(arch_p, "Architectural") if os.path.exists(arch_p) else None
+        _cache["str"]  = _build(str_p, "Structural") if os.path.exists(str_p) else None
         return _cache
 
 def page_count(model_key):
