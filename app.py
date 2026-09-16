@@ -156,7 +156,7 @@ with tab_chat:
             if llm_used:
                 steps.append("LLM intent analysis → bim_query")
             else:
-                steps.append(f"LLM failed ({llm_err}) · Using Offline Router" if llm_err else "LLM unavailable · Using Offline Router")
+                steps.append(f"LLM failed: {llm_err} · Offline Router")
             steps += [
                 "Selected tool: BIM Query Tool",
                 f"Queried entity: {params['ifc_type']}",
@@ -173,7 +173,7 @@ with tab_chat:
             res = tools.tool_drawing_query(q)
             arch_space = ifc_loader.count("arch", "IfcSpace")
             steps = ["Question received"]
-            steps.append("LLM intent analysis → drawing_query" if llm_used else "LLM unavailable · Using Offline Router")
+            steps.append(f"LLM failed: {llm_err} · Offline Router")
             steps += [
                 f"BIM check: IfcSpace = {arch_space} → room semantics unavailable",
                 "Automatically switching to drawing source",
