@@ -1,8 +1,5 @@
-"""TrustBIM Agent — product-grade Streamlit UI.
-Online: Qwen function-calling agent loop.
-Offline: deterministic rule-based fallback (always works).
-"""
-import os, sys
+"""TrustBIM Agent — product-grade Streamlit UI."""
+import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
@@ -64,7 +61,6 @@ def boot():
 
 ifc_data, pdf_data = boot()
 
-# ---------- hero ----------
 st.markdown("""
 <div class="hero">
   <h1>TrustBIM Agent</h1>
@@ -80,7 +76,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# AI engine status
 eng = llm_client.engine_status()
 if eng["state"] == "online":
     st.markdown(f"""
@@ -101,40 +96,64 @@ tab_chat, tab_overview, tab_health, tab_coord = st.tabs(
     ["💬 AI Assistant", "📊 Project Overview", "🩺 BIM Health", "🔗 Coordination"]
 )
 
-# ---------- offline fallback executor ----------
+def _is_cn(q):
+    return bool(re.search(r"[\u4e00-\u9fff]", q))
+
 def offline_answer(q):
+    cn = _is_cn(q)
     intent, params, _ = rule_route(q)
     trace = ["Question received", "Mode: Offline Deterministic Fallback", f"Local rule route → {intent}"]
     if intent == "bim_query":
         et = params["ifc_type"]; mk = params.get("model","arch")
         r = tools.tool_query_ifc_entities(discipline=mk, entity_type=et, operation="count")
-        trace += [f"Tool: query_ifc_entities({et}, count)", f"Result: {r.get('count')}"]
-        return r.get("answer", f"There are {r.get('count')} {et}."), r.get("source",""), r.get("evidence",""), "Rule-based IFC query", trace
+        n = r.get("count", 0)
+        noun_map = {"IfcDoor":"门","IfcWindow":"窗","IfcWall":"墙","IfcBeam":"梁",
+                    "IfcColumn":"柱","IfcPile":"桩","IfcFooting":"基础","IfcReinforcingBar":"钢筋",
+                    "IfcSlab":"板","IfcStair":"楼梯","IfcRailing":"栏杆","IfcRoof":"屋顶"}
+        if cn:
+            ans = f"{MODEL_CN[mk]}中共有 {n} 个{noun_map.get(et, et)}。"
+        else:
+            ans = f"There are {n} {et} in the BIM model."
+        trace += [f"Tool: query_ifc_entities({et}, count)", f"Result: {n}"]
+        return ans, r.get("source",""), r.get("evidence",""), "Rule-based IFC query", trace
     if intent == "bim_health":
         h = tools.tool_health("architecture")
         warns = [f"{w['item']}={w['count']}" for w in h["warnings"]]
-        return (f"Health check done. Warnings: {', '.join(warns)}.",
-                h["source"], "; ".join(warns), "BIM Health Check", trace + ["Tool: bim_health_check"])
+        if cn:
+            ans = f"健康检查完成，需关注：{'; '.join(warns)}。"
+        else:
+            ans = f"Health check done. Warnings: {', '.join(warns)}."
+        return ans, h["source"], "; ".join(warns), "BIM Health Check", trace + ["Tool: bim_health_check"]
     if intent == "coordination":
         c = tools.tool_coordination()
         reviews = [f"{i['item']} (arch={i['architecture_mm']} vs str={i['structure_mm']})" for i in c["items"] if i["status"]=="REVIEW"]
-        ans = f"Compared {len(c['items'])} levels. Reviews: {'; '.join(reviews) if reviews else 'none'}."
+        if cn:
+            ans = f"共比较 {len(c['items'])} 个标高项，需复核：{'; '.join(reviews) if reviews else '无'}。"
+        else:
+            ans = f"Compared {len(c['items'])} levels. Reviews: {'; '.join(reviews) if reviews else 'none'}."
         return ans, c["source"], c["evidence"], "Coordination Check", trace + ["Tool: coordination_check"]
     if intent == "drawing_query":
         r = tools.tool_extract_rooms("Level 2", "architecture")
         if r["success"]:
-            return (f"Level 2 rooms: {', '.join(r['rooms'])}.", r["source"],
-                    "Room labels extracted from drawing", "Drawing text extraction",
-                    trace + ["Tool: extract_rooms"])
-        return ("Room information could not be reliably extracted from the drawing.",
-                r["source"], r["reason"], "Drawing text extraction", trace + ["Tool: extract_rooms", "Extraction failed"])
-    return ("I can answer BIM quantity, drawing, health and coordination questions.",
-            "—", "—", "Rule router", trace)
+            if cn:
+                ans = f"二层房间：{', '.join(r['rooms'])}。"
+            else:
+                ans = f"Level 2 rooms: {', '.join(r['rooms'])}."
+            return ans, r["source"], "Room labels extracted from drawing", "Drawing text extraction", trace + ["Tool: extract_rooms"]
+        if cn:
+            ans = "无法从图纸中可靠提取房间信息。"
+        else:
+            ans = "Room information could not be reliably extracted from the drawing."
+        return ans, r["source"], r["reason"], "Drawing text extraction", trace + ["Tool: extract_rooms", "Extraction failed"]
+    if cn:
+        return "我可以回答 BIM 数量、图纸、健康检查和协调问题。", "—", "—", "Rule router", trace
+    return "I can answer BIM quantity, drawing, health and coordination questions.", "—", "—", "Rule router", trace
 
-# ---------- Tab 1: AI Assistant ----------
+MODEL_CN = {"arch":"建筑模型","str":"结构模型"}
+
 with tab_chat:
     q = st.text_input("Ask the agent",
-                      placeholder="e.g. How many doors are in the architectural model?")
+                      placeholder="e.g. How many doors are in the architectural model? / 这个建筑有几扇门？")
     c1, c2 = st.columns([1, 5])
     run = c1.button("Run", type="primary")
 
@@ -179,7 +198,6 @@ with tab_chat:
             st.markdown(f'<div class="trace-step"><b>{i}.</b> {s}</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------- Tab 2: Project Overview ----------
 with tab_overview:
     st.subheader("Project Overview — Sample House")
     arch = ifc_data["arch"]["counts"]
@@ -200,7 +218,6 @@ with tab_overview:
         b[2].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcPile",0)}</div><div class="lbl">Piles</div></div>', unsafe_allow_html=True)
         b[3].markdown(f'<div class="metric-card"><div class="num">{sstr.get("IfcReinforcingBar",0)}</div><div class="lbl">Reinforcing Bars</div></div>', unsafe_allow_html=True)
 
-# ---------- Tab 3: BIM Health ----------
 def _badge(s):
     return {"PASS":'<span class="badge badge-pass">PASS</span>',
             "WARNING":'<span class="badge badge-warn">WARNING</span>',
@@ -220,7 +237,6 @@ with tab_health:
         st.markdown(f'<div class="card"><b>Recommendation</b><br/>{h["recommendation"]}</div>',
                     unsafe_allow_html=True)
 
-# ---------- Tab 4: Coordination ----------
 with tab_coord:
     st.subheader("Architecture–Structure Coordination")
     if st.button("Run Coordination Check", type="primary"):

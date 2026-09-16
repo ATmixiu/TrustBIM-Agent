@@ -178,7 +178,8 @@ Rules:
 8. Do NOT turn a potential coordination issue into a confirmed design error. Say "manual review recommended".
 9. Do NOT use general world knowledge to invent BIM/project values.
 10. Include source and evidence when possible.
-Answer in 1-3 short sentences, English."""
+11. CRITICAL: Answer in the SAME language as the user latest message. If the user writes in Chinese, reply in Chinese. If in English, reply in English. Tool results are JSON in English, translate the final answer naturally into the user language.
+Answer in 1-3 short sentences."""
 
 MAX_STEPS = 4
 _RETRYABLE = {429, 500, 502, 503, 504}
