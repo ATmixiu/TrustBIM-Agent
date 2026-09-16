@@ -1,24 +1,13 @@
-"""Tools: engineering tools that operate on real IFC/PDF data.
-Every number must come from runtime extraction; no hard-coded answers."""
+"""Tools: engineering tools operating on real IFC/PDF data. No hardcoded answers."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from parsers import ifc_loader, pdf_loader
 
 MODEL_LABEL = {"arch": "Architectural IFC", "str": "Structural IFC"}
-ENTITY_HINT = {
-    "door": "IfcDoor", "window": "IfcWindow", "wall": "IfcWall",
-    "slab": "IfcSlab", "roof": "IfcRoof", "stair": "IfcStair",
-    "railing": "IfcRailing", "curtainwall": "IfcCurtainWall",
-    "beam": "IfcBeam", "column": "IfcColumn", "pile": "IfcPile",
-    "footing": "IfcFooting", "rebar": "IfcReinforcingBar",
-    "member": "IfcMember", "space": "IfcSpace", "covering": "IfcCovering",
-    "storey": "IfcBuildingStorey", "building": "IfcBuilding",
-    "project": "IfcProject", "site": "IfcSite",
-}
 
 def _discipline(key):
-    return "arch" if key in ("arch", "architecture", "architectural", "a") else "str"
+    return "arch" if key in ("arch","architecture","architectural","a") else "str"
 
 # ---------- Generic IFC query ----------
 def tool_query_ifc_entities(discipline="architecture", entity_type="", operation="count"):
@@ -48,7 +37,7 @@ def tool_search_drawing(query="", discipline="architecture", top_k=3):
     return {"success": True, "query": query, "results": hits,
             "source": f"{MODEL_LABEL[d]} (PDF)"}
 
-# ---------- Rooms from drawing ----------
+# ---------- Rooms ----------
 def tool_extract_rooms(level="Level 2", discipline="architecture"):
     return pdf_loader.extract_rooms_from_drawing(level=level, discipline=_discipline(discipline))
 
@@ -60,44 +49,70 @@ def tool_health(discipline="both"):
     if discipline in ("arch","architecture","a","both"):
         for t in targets_a:
             n = ifc_loader.count("arch", t)
-            status = "PASS" if n > 0 else "WARNING"
-            out.append({"discipline":"architecture","item":t,"count":n,"status":status})
+            out.append({"discipline":"architecture","item":t,"count":n,
+                        "status":"PASS" if n>0 else "WARNING"})
     if discipline in ("str","structure","s","both"):
         for t in targets_s:
             n = ifc_loader.count("str", t)
-            status = "PASS" if n > 0 else "WARNING"
-            out.append({"discipline":"structure","item":t,"count":n,"status":status})
-    warnings = [o for o in out if o["status"] == "WARNING"]
+            out.append({"discipline":"structure","item":t,"count":n,
+                        "status":"PASS" if n>0 else "WARNING"})
+    warnings = [o for o in out if o["status"]=="WARNING"]
     return {"success": True, "checks": out, "warnings": warnings,
             "source": "IFC Health Check",
             "recommendation": "Use drawings for room-related questions if IfcSpace is 0."}
 
-# ---------- Coordination: dynamic elevations from IFC storeys ----------
+# ---------- Coordination: dynamic, with PDF fallback for structure ----------
+def _ifc_levels(d):
+    """Get {name: elevation_mm} from IFC storeys. Returns {} if none."""
+    storeys = ifc_loader.storeys(d)
+    out = {}
+    for s in storeys:
+        if s["name"] and s["elevation"] is not None:
+            out[s["name"]] = s["elevation"]
+    return out
+
+def _norm(name):
+    n = name.lower()
+    if "level 1" in n or "ground" in n or "lower" in n:
+        return "level_1"
+    if "level 2" in n or "first floor" in n or "upper" in n:
+        return "level_2"
+    if "ceiling" in n:
+        return "ceiling"
+    if "foundation" in n or "footing" in n or "basement" in n:
+        return "foundation"
+    if "roof" in n or "parapet" in n:
+        return "roof"
+    return name
+
 def tool_coordination():
-    arch_storeys = ifc_loader.storeys("arch")
-    str_storeys = ifc_loader.storeys("str")
-    def _by_name(storeys):
-        d = {}
-        for s in storeys:
-            if s["name"] and s["elevation"] is not None:
-                d[s["name"]] = s["elevation"]
-        return d
-    a = _by_name(arch_storeys)
-    s = _by_name(str_storeys)
+    arch_levels = _ifc_levels("arch")
+    str_levels = _ifc_levels("str")
+    str_source = "Structural IFC"
+    # If structure has no storeys, fall back to structural PDF
+    if not str_levels:
+        pdf_lvl = pdf_loader.extract_levels_from_drawing("str")
+        for l in pdf_lvl["levels"]:
+            str_levels[l["original_name"]] = l["elevation_mm"]
+        str_source = "Structural PDF (dynamic extraction)"
+    arch_source = "Architectural IFC" if arch_levels else "Architectural PDF"
     items = []
-    for name in sorted(set(a.keys()) | set(s.keys())):
-        av = a.get(name)
-        sv = s.get(name)
+    all_names = set(arch_levels.keys()) | set(str_levels.keys())
+    for name in sorted(all_names):
+        av = arch_levels.get(name)
+        sv = str_levels.get(name)
         if av is None or sv is None:
             status = "REVIEW"
         elif abs(av - sv) < 50:
             status = "MATCH"
         else:
             status = "REVIEW"
-        items.append({"item": name, "architecture_mm": av, "structure_mm": sv, "status": status})
+        items.append({"item": name, "architecture_mm": av, "structure_mm": sv,
+                      "status": status,
+                      "arch_source": arch_source, "str_source": str_source})
     return {"success": True, "items": items,
-            "source": "Architecture + Structural IFC storeys",
-            "evidence": "IfcBuildingStorey.Elevation compared across disciplines"}
+            "source": f"{arch_source} vs {str_source}",
+            "evidence": "IfcBuildingStorey.Elevation / PDF level text compared across disciplines"}
 
 # ---------- Project summary ----------
 def tool_summary():
