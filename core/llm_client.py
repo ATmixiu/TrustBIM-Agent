@@ -141,30 +141,34 @@ _ENTITY_MAP = {
 }
 _DISCIPLINE_MODEL = {"architecture": "arch", "architectural": "arch", "structural": "str", "structure": "str"}
 
-def classify_intent(question: str) -> Optional[Dict]:
+def classify_intent(question: str):
+    """Return (parsed_dict, error_str). error_str=None means success."""
     c = _get_client()
     if c is None:
-        return None
+        return None, "no_client"
     raw, err = _chat_with_retry(c, [
         {"role": "system", "content": INTENT_SYS},
         {"role": "user", "content": question},
     ])
     if raw is None:
-        return None
+        return None, err or "api_failed"
+    # strip markdown fences if present
+    txt = raw.strip()
+    txt = txt.replace("```json", "").replace("```", "").strip()
     try:
-        m = re.search(r"\{.*\}", raw, re.S)
+        m = re.search(r"\{.*\}", txt, re.S)
         if not m:
-            return None
+            return None, f"no_json_in_response:{txt[:100]}"
         data = json.loads(m.group(0))
         intent = data.get("intent")
         if intent not in ("bim_query", "drawing_query", "bim_health", "coordination_check"):
-            return None
+            return None, f"bad_intent:{intent}"
         out = {"intent": intent, "llm": True}
         if intent == "bim_query":
             ent = (data.get("entity") or "").lower()
             ifc_type = _ENTITY_MAP.get(ent)
             if not ifc_type:
-                return None
+                return None, f"unknown_entity:{ent}"
             disc = (data.get("discipline") or "").lower()
             model_key = _DISCIPLINE_MODEL.get(disc, "arch")
             if ifc_type in ("IfcBeam","IfcColumn","IfcPile","IfcFooting","IfcReinforcingBar"):
@@ -172,9 +176,9 @@ def classify_intent(question: str) -> Optional[Dict]:
             out.update({"ifc_type": ifc_type, "model": model_key})
         elif intent == "drawing_query":
             out["level"] = data.get("level") or "Level 2"
-        return out
-    except Exception:
-        return None
+        return out, None
+    except Exception as e:
+        return None, f"json_parse:{type(e).__name__}"
 
 # ---------- Answer polishing ----------
 POLISH_SYS = """You rewrite engineering answers from a BIM agent.

@@ -39,19 +39,22 @@ def rule_route(question: str):
 
 def route(question: str):
     """Try LLM first; fall back to rules on any failure.
-    Returns (intent, params, source_label) where source_label is 'llm' or 'rules'."""
+    Returns (intent, params, source_label, error_msg)."""
     if llm_client.is_available():
-        parsed = llm_client.classify_intent(question)
+        parsed, err = llm_client.classify_intent(question)
         if parsed:
             intent = parsed.pop("intent")
-            llm_flag = parsed.pop("llm", True)
-            # map LLM intent names
+            parsed.pop("llm", True)
             intent_map = {
                 "bim_query": "bim_query",
                 "drawing_query": "drawing_query",
                 "bim_health": "bim_health",
                 "coordination_check": "coordination",
             }
-            return intent_map.get(intent, "unknown"), parsed, "llm"
+            return intent_map.get(intent, "unknown"), parsed, "llm", None
+        # LLM failed - record why
+        err_msg = err or "unknown"
+        intent, params, _ = rule_route(question)
+        return intent, params, "rules", err_msg
     intent, params, _ = rule_route(question)
-    return intent, params, "rules"
+    return intent, params, "rules", None

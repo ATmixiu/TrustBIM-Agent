@@ -109,7 +109,7 @@ with tab_chat:
     run = c1.button("Run", type="primary")
 
     if run and q.strip():
-        intent, params, route_src = route(q)
+        intent, params, route_src, llm_err = route(q)
         llm_used = (route_src == "llm")
 
         if intent == "bim_health":
@@ -156,7 +156,7 @@ with tab_chat:
             if llm_used:
                 steps.append("LLM intent analysis → bim_query")
             else:
-                steps.append("LLM unavailable · Using Offline Router")
+                steps.append(f"LLM failed ({llm_err}) · Using Offline Router" if llm_err else "LLM unavailable · Using Offline Router")
             steps += [
                 "Selected tool: BIM Query Tool",
                 f"Queried entity: {params['ifc_type']}",
