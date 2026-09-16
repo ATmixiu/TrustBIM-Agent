@@ -213,6 +213,10 @@ with tab_chat:
             pdf_loader.set_project_dir(None)
         except AttributeError:
             pass
+        if st.session_state.get("proj_loaded"):
+            st.cache_resource.clear()
+            st.session_state["proj_loaded"] = False
+            st.rerun()
 
     q = st.text_input("Ask the agent",
                       placeholder="e.g. How many doors are in the architectural model? / 这个建筑有几扇门？")
