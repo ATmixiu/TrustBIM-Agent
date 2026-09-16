@@ -10,9 +10,19 @@ from dotenv import load_dotenv
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT, ".env"))
 
-API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
-MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()
+def _secret(key, default=""):
+    # 1) Streamlit Cloud Secrets  2) .env / env var
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    return os.getenv(key, default).strip()
+
+API_KEY = _secret("OPENROUTER_API_KEY")
+BASE_URL = _secret("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+MODEL = _secret("OPENROUTER_MODEL") or "openrouter/free"
 
 _client = None
 
