@@ -59,6 +59,61 @@ html, body, [class*="css"] { font-family: 'Segoe UI', 'Helvetica Neue', Arial, s
 def boot():
     return ifc_loader.load_all(), pdf_loader.load_all()
 
+# ---- Project source selector (must run BEFORE boot) ----
+_src = st.radio("Project Source",
+                ["Sample House (Course Demo)", "Upload Your Own Project"],
+                horizontal=True, key="proj_src")
+if _src == "Upload Your Own Project":
+    up_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp", "uploaded")
+    os.makedirs(up_dir, exist_ok=True)
+    _af = st.file_uploader("Architectural IFC (.ifc)", type=["ifc"], key="up_arch_ifc")
+    _ap = st.file_uploader("Architectural Drawing (.pdf)", type=["pdf"], key="up_arch_pdf")
+    _sf = st.file_uploader("Structural IFC (.ifc)", type=["ifc"], key="up_str_ifc")
+    _sp = st.file_uploader("Structural Drawing (.pdf)", type=["pdf"], key="up_str_pdf")
+    _load = st.button("Load Uploaded Project", type="primary")
+    if _load:
+        _saved = []
+        for _u, _n in [(_af,"architectural.ifc"),(_ap,"architectural.pdf"),
+                       (_sf,"structural.ifc"),(_sp,"structural.pdf")]:
+            if _u is not None:
+                with open(os.path.join(up_dir, _n), "wb") as f:
+                    f.write(_u.getbuffer())
+                _saved.append(_n)
+        if _saved:
+            try:
+                ifc_loader.set_project_dir(up_dir)
+                pdf_loader.set_project_dir(up_dir)
+            except AttributeError:
+                pass
+            st.session_state["proj_dir"] = up_dir
+            st.cache_resource.clear()
+            st.rerun()
+    if st.session_state.get("proj_dir"):
+        try:
+            ifc_loader.set_project_dir(st.session_state["proj_dir"])
+            pdf_loader.set_project_dir(st.session_state["proj_dir"])
+        except AttributeError:
+            pass
+        if st.button("Clear / Reset to Sample House"):
+            try:
+                ifc_loader.set_project_dir(None)
+                pdf_loader.set_project_dir(None)
+            except AttributeError:
+                pass
+            st.session_state["proj_dir"] = None
+            st.cache_resource.clear()
+            st.rerun()
+else:
+    if st.session_state.get("proj_dir") is not None:
+        try:
+            ifc_loader.set_project_dir(None)
+            pdf_loader.set_project_dir(None)
+        except AttributeError:
+            pass
+        st.session_state["proj_dir"] = None
+        st.cache_resource.clear()
+        st.rerun()
+
 ifc_data, pdf_data = boot()
 
 def _pill(label, ready):
@@ -162,62 +217,6 @@ def offline_answer(q):
 MODEL_CN = {"arch":"建筑模型","str":"结构模型"}
 
 with tab_chat:
-    # ---- Project source selector ----
-    src_choice = st.radio("Project Source",
-                          ["Sample House (Course Demo)", "Upload Your Own Project"],
-                          horizontal=True, key="proj_src")
-    if src_choice == "Upload Your Own Project":
-        up_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp", "uploaded")
-        os.makedirs(up_dir, exist_ok=True)
-        col_up1, col_up2 = st.columns(2)
-        with col_up1:
-            af = st.file_uploader("Architectural IFC (.ifc)", type=["ifc"], key="up_arch_ifc")
-            ap = st.file_uploader("Architectural Drawing (.pdf)", type=["pdf"], key="up_arch_pdf")
-        with col_up2:
-            sf = st.file_uploader("Structural IFC (.ifc)", type=["ifc"], key="up_str_ifc")
-            sp = st.file_uploader("Structural Drawing (.pdf)", type=["pdf"], key="up_str_pdf")
-        if st.button("Load Uploaded Project", type="primary"):
-            saved = []
-            for upload, name in [(af,"architectural.ifc"),(ap,"architectural.pdf"),
-                                 (sf,"structural.ifc"),(sp,"structural.pdf")]:
-                if upload is not None:
-                    with open(os.path.join(up_dir, name), "wb") as f:
-                        f.write(upload.getbuffer())
-                    saved.append(name)
-            if saved:
-                try:
-                    ifc_loader.set_project_dir(up_dir)
-                    pdf_loader.set_project_dir(up_dir)
-                except AttributeError:
-                    pass
-                st.session_state["proj_loaded"] = True
-                st.success(f"Loaded: {', '.join(saved)}")
-                st.cache_resource.clear()
-                st.rerun()
-            else:
-                st.warning("Please upload at least one file.")
-        if st.session_state.get("proj_loaded") and st.button("Clear / Reset to Sample House"):
-            try:
-                ifc_loader.set_project_dir(None)
-                pdf_loader.set_project_dir(None)
-            except AttributeError:
-                pass
-            st.session_state["proj_loaded"] = False
-            st.cache_resource.clear()
-            st.rerun()
-        if st.session_state.get("proj_loaded"):
-            st.info("📁 Current: Uploaded Project (session-only, not saved to GitHub)")
-    else:
-        try:
-            ifc_loader.set_project_dir(None)
-            pdf_loader.set_project_dir(None)
-        except AttributeError:
-            pass
-        if st.session_state.get("proj_loaded"):
-            st.cache_resource.clear()
-            st.session_state["proj_loaded"] = False
-            st.rerun()
-
     q = st.text_input("Ask the agent",
                       placeholder="e.g. How many doors are in the architectural model? / 这个建筑有几扇门？")
     c1, c2 = st.columns([1, 5])
