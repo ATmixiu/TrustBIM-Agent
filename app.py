@@ -104,12 +104,13 @@ if _src == "Upload Your Own Project":
             st.cache_resource.clear()
             st.rerun()
 else:
-    if st.session_state.get("proj_dir") is not None:
-        try:
-            ifc_loader.set_project_dir(None)
-            pdf_loader.set_project_dir(None)
-        except AttributeError:
-            pass
+    try:
+        ifc_loader.set_project_dir(None)
+        pdf_loader.set_project_dir(None)
+    except AttributeError:
+        pass
+    if st.session_state.get("proj_dir") is not None or st.session_state.get("cache_cleared") != True:
+        st.session_state["cache_cleared"] = True
         st.session_state["proj_dir"] = None
         st.cache_resource.clear()
         st.rerun()
