@@ -152,6 +152,49 @@ def offline_answer(q):
 MODEL_CN = {"arch":"建筑模型","str":"结构模型"}
 
 with tab_chat:
+    # ---- Project source selector ----
+    src_choice = st.radio("Project Source",
+                          ["Sample House (Course Demo)", "Upload Your Own Project"],
+                          horizontal=True, key="proj_src")
+    if src_choice == "Upload Your Own Project":
+        up_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp", "uploaded")
+        os.makedirs(up_dir, exist_ok=True)
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            af = st.file_uploader("Architectural IFC (.ifc)", type=["ifc"], key="up_arch_ifc")
+            ap = st.file_uploader("Architectural Drawing (.pdf)", type=["pdf"], key="up_arch_pdf")
+        with col_up2:
+            sf = st.file_uploader("Structural IFC (.ifc)", type=["ifc"], key="up_str_ifc")
+            sp = st.file_uploader("Structural Drawing (.pdf)", type=["pdf"], key="up_str_pdf")
+        if st.button("Load Uploaded Project", type="primary"):
+            saved = []
+            for upload, name in [(af,"architectural.ifc"),(ap,"architectural.pdf"),
+                                 (sf,"structural.ifc"),(sp,"structural.pdf")]:
+                if upload is not None:
+                    with open(os.path.join(up_dir, name), "wb") as f:
+                        f.write(upload.getbuffer())
+                    saved.append(name)
+            if saved:
+                ifc_loader.set_project_dir(up_dir)
+                pdf_loader.set_project_dir(up_dir)
+                st.session_state["proj_loaded"] = True
+                st.success(f"Loaded: {', '.join(saved)}")
+                st.cache_resource.clear()
+                st.rerun()
+            else:
+                st.warning("Please upload at least one file.")
+        if st.session_state.get("proj_loaded") and st.button("Clear / Reset to Sample House"):
+            ifc_loader.set_project_dir(None)
+            pdf_loader.set_project_dir(None)
+            st.session_state["proj_loaded"] = False
+            st.cache_resource.clear()
+            st.rerun()
+        if st.session_state.get("proj_loaded"):
+            st.info("📁 Current: Uploaded Project (session-only, not saved to GitHub)")
+    else:
+        ifc_loader.set_project_dir(None)
+        pdf_loader.set_project_dir(None)
+
     q = st.text_input("Ask the agent",
                       placeholder="e.g. How many doors are in the architectural model? / 这个建筑有几扇门？")
     c1, c2 = st.columns([1, 5])

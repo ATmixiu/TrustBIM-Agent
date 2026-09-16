@@ -5,6 +5,20 @@ import ifcopenshell
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
 
+_project_dir = None
+
+def set_project_dir(d):
+    global _project_dir, _cache
+    _project_dir = d
+    _cache = {}
+
+def _paths():
+    if _project_dir:
+        return (os.path.join(_project_dir, "architectural.ifc"),
+                os.path.join(_project_dir, "structural.ifc"))
+    return (os.path.join(DATA, "architectural.ifc"),
+            os.path.join(DATA, "structural.ifc"))
+
 _lock = threading.Lock()
 _cache = {}
 
@@ -48,8 +62,11 @@ def load_all():
     with _lock:
         if _cache:
             return _cache
-        _cache["arch"] = _build(os.path.join(DATA, "architectural.ifc"), "Architectural")
-        _cache["str"]  = _build(os.path.join(DATA, "structural.ifc"),   "Structural")
+        arch_p, str_p = _paths()
+        if os.path.exists(arch_p):
+            _cache["arch"] = _build(arch_p, "Architectural")
+        if os.path.exists(str_p):
+            _cache["str"] = _build(str_p, "Structural")
         return _cache
 
 def count(model_key, ifc_type):
