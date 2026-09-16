@@ -20,9 +20,30 @@ def _secret(key, default=""):
         pass
     return os.getenv(key, default).strip()
 
-API_KEY = _secret("OPENROUTER_API_KEY")
-BASE_URL = _secret("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-MODEL = _secret("OPENROUTER_MODEL") or "openai/gpt-oss-20b:free"
+# Provider priority: Qwen (Alibaba Model Studio) first, OpenRouter as fallback
+_QWEN_KEY = _secret("QWEN_API_KEY")
+_QWEN_URL = _secret("QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_QWEN_MODEL = _secret("QWEN_MODEL") or "qwen-flash"
+
+_OR_KEY = _secret("OPENROUTER_API_KEY")
+_OR_URL = _secret("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+_OR_MODEL = _secret("OPENROUTER_MODEL") or "openai/gpt-oss-20b:free"
+
+if _QWEN_KEY:
+    API_KEY = _QWEN_KEY
+    BASE_URL = _QWEN_URL
+    MODEL = _QWEN_MODEL
+    PROVIDER = "Qwen / Alibaba Cloud Model Studio"
+elif _OR_KEY:
+    API_KEY = _OR_KEY
+    BASE_URL = _OR_URL
+    MODEL = _OR_MODEL
+    PROVIDER = "OpenRouter"
+else:
+    API_KEY = ""
+    BASE_URL = _QWEN_URL
+    MODEL = _QWEN_MODEL
+    PROVIDER = "Qwen / Alibaba Cloud Model Studio"
 
 _client = None
 
@@ -42,8 +63,8 @@ def is_available() -> bool:
 
 def engine_status() -> Dict[str, str]:
     if is_available():
-        return {"state": "online", "platform": "OpenRouter", "model": MODEL}
-    return {"state": "offline", "platform": "OpenRouter", "model": MODEL}
+        return {"state": "online", "platform": PROVIDER, "model": MODEL}
+    return {"state": "offline", "platform": PROVIDER, "model": MODEL}
 
 # ---------- retry wrapper ----------
 import time as _time
