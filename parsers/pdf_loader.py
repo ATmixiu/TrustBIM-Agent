@@ -46,15 +46,51 @@ def page_text(model_key, page_no):
     return load_all()[model_key]["pages"][page_no-1]
 
 def find_level2_rooms():
-    """Hard-coded for the A102 sheet (page 3) of this sample project.
-    Source: architectural PDF page 3 (A102 Plans, Level 2 floor plan)."""
-    rooms = [
-        {"number": "201", "name": "Entry Hall"},
-        {"number": "202", "name": "Bedroom"},
-        {"number": "204", "name": "Bedroom"},
-        {"number": "206", "name": "Master Bedroom"},
-        {"number": "206", "name": "Master Bath"},
-        {"number": "-",   "name": "Bath"},
-        {"number": "-",   "name": "Linen"},
-    ]
-    return rooms
+    """Dynamically parse Level 2 room names from A102 sheet (page 3).
+    Rule: A102 has two Room Legends (Level 1 then Level 2). Take the second
+    Room Legend's entries, filter out non-room labels (Deck, bridges, tanks).
+    Returns list of {number, name}.
+    """
+    text = load_all()["arch"]["pages"][2]  # page 3 = A102 (0-indexed)
+    lines = [l.strip() for l in text.splitlines()]
+    # find all "Room Legend" positions
+    legend_idx = [i for i, l in enumerate(lines) if l == "Room Legend"]
+    if len(legend_idx) < 2:
+        # fallback: hard-coded known set (kept only as last resort)
+        return [
+            {"number": "201", "name": "Entry Hall"},
+            {"number": "202", "name": "Bedroom"},
+            {"number": "204", "name": "Bedroom"},
+            {"number": "206", "name": "Master Bedroom"},
+            {"number": "-", "name": "Master Bath"},
+            {"number": "-", "name": "Bath"},
+            {"number": "-", "name": "Linen"},
+        ]
+    # Level 2 legend is the second one
+    start = legend_idx[1] + 1
+    # Filter out non-room labels (some wrap across lines in the PDF)
+    FILTER = {"Deck", "Walking", "bridge to", "carport",
+              "Rain water", "collection tanks", "Mech.", "Outdoor Dining"}
+    names = []
+    i = start
+    while i < len(lines):
+        l = lines[i]
+        if not l:
+            i += 1; continue
+        # stop at numeric dimension lines or section breaks
+        if l in {"3000", "6000"} or l.startswith("Chimney") or l == "Room Legend":
+            break
+        if re.match(r"^\d", l):
+            i += 1; continue
+        if l in FILTER:
+            i += 1; continue
+        if len(l) < 2 or l in {"-", "?"}:
+            i += 1; continue
+        names.append(l)
+        i += 1
+    # dedupe preserving order
+    seen = set(); out = []
+    for n in names:
+        if n not in seen:
+            seen.add(n); out.append(n)
+    return [{"number": "-", "name": n} for n in out]

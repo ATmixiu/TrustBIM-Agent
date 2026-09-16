@@ -22,7 +22,7 @@ def _secret(key, default=""):
 
 API_KEY = _secret("OPENROUTER_API_KEY")
 BASE_URL = _secret("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-MODEL = _secret("OPENROUTER_MODEL") or "openrouter/free"
+MODEL = _secret("OPENROUTER_MODEL") or "openai/gpt-oss-20b:free"
 
 _client = None
 
@@ -32,7 +32,7 @@ def _get_client():
         return _client
     try:
         from openai import OpenAI
-        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=20.0)
+        _client = OpenAI(api_key=API_KEY, base_url=BASE_URL, timeout=15.0)
     except Exception:
         _client = None
     return _client
@@ -43,7 +43,32 @@ def is_available() -> bool:
 def engine_status() -> Dict[str, str]:
     if is_available():
         return {"state": "online", "platform": "OpenRouter", "model": MODEL}
-    return {"state": "offline", "platform": "OpenRouter", "model": MODEL or "openrouter/free"}
+    return {"state": "offline", "platform": "OpenRouter", "model": MODEL}
+
+# ---------- retry wrapper ----------
+import time as _time
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+def _chat_with_retry(client, messages):
+    """Up to 3 attempts. Retry on 429/5xx/timeout; fail fast on 401/403."""
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = client.chat.completions.create(
+                model=MODEL, messages=messages, temperature=0.0, max_tokens=200,
+            )
+            return r.choices[0].message.content or "", None
+        except Exception as e:
+            last_err = e
+            code = getattr(e, "status_code", None) or getattr(e, "code", None)
+            # 401/403 = bad key/model, do not retry
+            if code in (401, 403):
+                return None, f"auth_error:{code}"
+            # otherwise retry with backoff
+            if attempt < 2:
+                _time.sleep(1.0 * (attempt + 1))
+            continue
+    return None, f"retry_exhausted:{type(last_err).__name__}"
 
 # ---------- Intent classification ----------
 INTENT_SYS = """You are an intent classifier for a BIM agent.
@@ -70,22 +95,16 @@ _ENTITY_MAP = {
 _DISCIPLINE_MODEL = {"architecture": "arch", "architectural": "arch", "structural": "str", "structure": "str"}
 
 def classify_intent(question: str) -> Optional[Dict]:
-    """Return normalized tool request dict, or None on failure."""
     c = _get_client()
     if c is None:
         return None
+    raw, err = _chat_with_retry(c, [
+        {"role": "system", "content": INTENT_SYS},
+        {"role": "user", "content": question},
+    ])
+    if raw is None:
+        return None
     try:
-        r = c.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": INTENT_SYS},
-                {"role": "user", "content": question},
-            ],
-            temperature=0.0,
-            max_tokens=200,
-        )
-        raw = r.choices[0].message.content or ""
-        # extract JSON
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
             return None
@@ -101,7 +120,6 @@ def classify_intent(question: str) -> Optional[Dict]:
                 return None
             disc = (data.get("discipline") or "").lower()
             model_key = _DISCIPLINE_MODEL.get(disc, "arch")
-            # structural-only entities force str
             if ifc_type in ("IfcBeam","IfcColumn","IfcPile","IfcFooting","IfcReinforcingBar"):
                 model_key = "str"
             out.update({"ifc_type": ifc_type, "model": model_key})
@@ -125,18 +143,12 @@ def polish_answer(question: str, tool_payload: Dict) -> Optional[str]:
     c = _get_client()
     if c is None:
         return None
-    try:
-        user_msg = f"User question: {question}\nTool data: {json.dumps(tool_payload, ensure_ascii=False)}"
-        r = c.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": POLISH_SYS},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.2,
-            max_tokens=200,
-        )
-        txt = (r.choices[0].message.content or "").strip()
-        return txt if len(txt) > 5 else None
-    except Exception:
+    user_msg = f"User question: {question}\nTool data: {json.dumps(tool_payload, ensure_ascii=False)}"
+    raw, err = _chat_with_retry(c, [
+        {"role": "system", "content": POLISH_SYS},
+        {"role": "user", "content": user_msg},
+    ])
+    if raw is None:
         return None
+    txt = raw.strip()
+    return txt if len(txt) > 5 else None
