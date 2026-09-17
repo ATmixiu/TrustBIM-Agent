@@ -142,9 +142,11 @@ def extract_rooms_from_drawing(level="Level 2", discipline="architecture"):
 def extract_levels_from_drawing(discipline="structure"):
     """Scan PDF for level name + elevation value pairs dynamically.
     Returns list of {original_name, elevation_mm}."""
-    d = load_all()[_d(discipline)]
+    d = load_all().get(_d(discipline))
     results = {}
-    for pno, text in enumerate(d["pages"]):
+    if d is None:
+        return {"levels": [], "source": f"{discipline} PDF not loaded"}
+    for pno, text in enumerate(d.get("pages", [])):
         lines = [l.strip() for l in text.splitlines()]
         for i, line in enumerate(lines):
             # look for a line that looks like a level name
